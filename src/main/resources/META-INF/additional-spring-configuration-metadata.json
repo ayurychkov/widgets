@@ -1,0 +1,13 @@
+{
+  "properties": [
+    {
+      "name": "widgets.repository.mode",
+      "type": "java.lang.String",
+      "description": "Description for widgets.repository.mode."
+    },
+    {
+      "name": "widgets.pagesize",
+      "type": "java.lang.Integer",
+      "description": "Description for widgets.pagesize."
+    }
+  ] }
