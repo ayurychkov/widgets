@@ -6,11 +6,9 @@ import net.rychkov.lab.widgets.dal.model.Widget;
 import net.rychkov.lab.widgets.dal.model.WidgetDelta;
 import net.rychkov.lab.widgets.dal.repository.ConstraintViolationException;
 import net.rychkov.lab.widgets.dal.repository.WidgetRepository;
-import net.rychkov.lab.widgets.dal.repository.WidgetRepositoryTransaction;
 import net.rychkov.lab.widgets.service.WidgetService;
 import org.junit.jupiter.api.Test;
 import org.mockito.InOrder;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import static org.mockito.Mockito.*;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -33,9 +31,6 @@ public class DefaultWidgetServiceImplTests {
     @MockBean
     @Qualifier("repository")
     private WidgetRepository repository;
-
-    @Mock
-    private WidgetRepositoryTransaction tx;
 
     @Autowired
     private WidgetService service;
@@ -130,7 +125,7 @@ public class DefaultWidgetServiceImplTests {
 
         // mock
         when(repository.getAllOrderByZ()).thenReturn(repoContent);
-        when(repository.BeginTransaction()).thenReturn(tx);
+        when(repository.getMaxZ()).thenReturn(null);
         when(repository.add(any(WidgetDelta.class))).thenReturn(createdWidget);
 
         // test
@@ -175,8 +170,8 @@ public class DefaultWidgetServiceImplTests {
         );
 
         // mock
+        when(repository.getMaxZ()).thenReturn(repoCount-1);
         when(repository.getAllOrderByZ()).thenReturn(repoContent);
-        when(repository.BeginTransaction()).thenReturn(tx);
         when(repository.add(any(WidgetDelta.class))).thenReturn(createdWidget);
 
         // test
@@ -222,7 +217,6 @@ public class DefaultWidgetServiceImplTests {
 
         // mock
         when(repository.getAllOrderByZ()).thenReturn(new ArrayList<>());
-        when(repository.BeginTransaction()).thenReturn(tx);
         when(repository.add(any(WidgetDelta.class))).thenReturn(createdWidget);
 
         // test
@@ -268,7 +262,6 @@ public class DefaultWidgetServiceImplTests {
 
         // mock
         when(repository.getAllOrderByZ()).thenReturn(repoContent);
-        when(repository.BeginTransaction()).thenReturn(tx);
         when(repository.add(any(WidgetDelta.class))).thenReturn(createdWidget);
 
         // test
@@ -315,7 +308,6 @@ public class DefaultWidgetServiceImplTests {
 
         // mock
         when(repository.getAllOrderByZ()).thenReturn(repoContent);
-        when(repository.BeginTransaction()).thenReturn(tx);
         when(repository.add(any(WidgetDelta.class))).thenReturn(createdWidget);
 
         // test
@@ -363,7 +355,17 @@ public class DefaultWidgetServiceImplTests {
 
         // mock
         when(repository.getAllOrderByZ()).thenReturn(repoContent);
-        when(repository.BeginTransaction()).thenReturn(tx);
+        when(repository.updateAll(argThat(m ->
+                m.size()==2 &&
+                m.containsKey(7) &&
+                m.containsKey(8) &&
+                m.get(7).getZ()==7 &&
+                m.get(8).getZ()==23
+                )))
+            .thenReturn(Arrays.asList(
+                new Widget(7,6,6,7,6,6, new Date()),
+                new Widget(8,7,7,23,7,7, new Date())
+            ));
         when(repository.add(any(WidgetDelta.class))).thenReturn(createdWidget);
 
         // test
@@ -379,8 +381,13 @@ public class DefaultWidgetServiceImplTests {
 
         // check repository call
         InOrder mockOrder = inOrder(repository);
-        mockOrder.verify(repository).update(eq(8), argThat(wd -> wd.getZ()==7+Z_STEP));
-        mockOrder.verify(repository).update(eq(7), argThat(wd -> wd.getZ()==7));
+        mockOrder.verify(repository).updateAll(argThat(m ->
+                m.size()==2 &&
+                        m.containsKey(7) &&
+                        m.containsKey(8) &&
+                        m.get(7).getZ()==7 &&
+                        m.get(8).getZ()==23
+        ));
         mockOrder.verify(repository).add(delta);
     }
 
@@ -413,7 +420,6 @@ public class DefaultWidgetServiceImplTests {
 
         // mock
         when(repository.getAllOrderByZ()).thenReturn(repoContent);
-        when(repository.BeginTransaction()).thenReturn(tx);
         when(repository.add(any(WidgetDelta.class))).thenReturn(createdWidget);
 
         // test
@@ -430,12 +436,17 @@ public class DefaultWidgetServiceImplTests {
         // check repository call
         InOrder mockOrder = inOrder(repository);
 
-        mockOrder.verify(repository).update(eq(8), argThat(wd -> wd.getZ() == (zCoord + Z_STEP*5) ));
-        mockOrder.verify(repository).update(eq(7), argThat(wd -> wd.getZ() == (zCoord + Z_STEP*4) ));
-        mockOrder.verify(repository).update(eq(6), argThat(wd -> wd.getZ() == (zCoord + Z_STEP*3) ));
-        mockOrder.verify(repository).update(eq(5), argThat(wd -> wd.getZ() == (zCoord + Z_STEP*2) ));
-        mockOrder.verify(repository).update(eq(4), argThat(wd -> wd.getZ() == (zCoord + Z_STEP*1) ));
-
+        mockOrder.verify(repository).updateAll(argThat(m ->
+                m.size()==5 &&
+                m.containsKey(4) && m.containsKey(5) &&
+                m.containsKey(6) && m.containsKey(7) &&
+                m.containsKey(8) &&
+                m.get(4).getZ()==(zCoord + Z_STEP*1) &&
+                m.get(5).getZ()==(zCoord + Z_STEP*2) &&
+                m.get(6).getZ()==(zCoord + Z_STEP*3) &&
+                m.get(7).getZ()==(zCoord + Z_STEP*4) &&
+                m.get(8).getZ()==(zCoord + Z_STEP*5)
+        ));
         mockOrder.verify(repository).add(delta);
     }
 
@@ -470,7 +481,6 @@ public class DefaultWidgetServiceImplTests {
         // mock
         when(repository.getAllOrderByZ()).thenReturn(repoContent);
         when(repository.get(widgetId)).thenReturn(repoContent.get((int)widgetId-1));
-        when(repository.BeginTransaction()).thenReturn(tx);
         when(repository.update(eq(widgetId),any(WidgetDelta.class))).thenReturn(updatedWidget);
 
         // test
@@ -520,8 +530,9 @@ public class DefaultWidgetServiceImplTests {
 
         // mock
         when(repository.getAllOrderByZ()).thenReturn(repoContent);
-        when(repository.get(widgetId)).thenReturn(repoContent.get((int)widgetId-1));
-        when(repository.BeginTransaction()).thenReturn(tx);
+        when(repository.get(widgetId)).thenReturn(repoContent.get(widgetId-1));
+        when(repository.updateAll(argThat(m -> m.size()==1 && m.containsKey(widgetId))))
+                .thenReturn(Arrays.asList(updatedWidget));
         when(repository.update(eq(widgetId),any(WidgetDelta.class))).thenReturn(updatedWidget);
 
         // test
@@ -538,7 +549,11 @@ public class DefaultWidgetServiceImplTests {
         // check repository call
         InOrder mockOrder = inOrder(repository);
 
-        mockOrder.verify(repository).update(eq(8), argThat(wd -> wd.getZ() == (7 + Z_STEP) ));
+        mockOrder.verify(repository).updateAll(argThat(m ->
+                m.size()==1 &&
+                m.containsKey(8) &&
+                m.get(8).getZ()==23
+        ));
 
         mockOrder.verify(repository).update(eq(widgetId), eq(delta) );
 

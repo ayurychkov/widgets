@@ -6,28 +6,25 @@ import net.rychkov.lab.widgets.dal.repository.ConstraintViolationException;
 import net.rychkov.lab.widgets.dal.repository.CustomInMemory.RepositoryImpl;
 import net.rychkov.lab.widgets.dal.repository.WidgetRepository;
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.test.annotation.DirtiesContext;
 
 import javax.transaction.NotSupportedException;
 import java.util.*;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 @SpringBootTest
 public class CustomInMemoryWidgetRepositoryTests {
 
-    @Autowired
-    @Qualifier("customInMemory")
-    public WidgetRepository repository;
-
-
-
     @Test
-    @DirtiesContext
     public void get() throws ConstraintViolationException {
+
+        WidgetRepository repository = new RepositoryImpl();
 
         WidgetDelta testWidget = new WidgetDelta(0,0,0,0,0);
 
@@ -44,8 +41,9 @@ public class CustomInMemoryWidgetRepositoryTests {
     }
 
     @Test
-    @DirtiesContext
     public void getWrongId() throws ConstraintViolationException {
+
+        WidgetRepository repository = new RepositoryImpl();
 
         WidgetDelta testWidget = new WidgetDelta(0,0,0,0,0);
 
@@ -57,31 +55,12 @@ public class CustomInMemoryWidgetRepositoryTests {
     }
 
     @Test
-    @DirtiesContext
-    public void getAll() throws ConstraintViolationException {
-
-        assertNotNull(repository.getAll());
-        assertEquals(0, repository.getAll().size());
-
-        WidgetDelta testWidget = new WidgetDelta(0,0,0,0,0);
-
-        repository.add(testWidget);
-        assertEquals(1, repository.getAll().size());
-
-        testWidget.setZ(1);
-        repository.add(testWidget);
-        assertEquals(2, repository.getAll().size());
-
-        testWidget.setZ(2);
-        repository.add(testWidget);
-        assertEquals(3, repository.getAll().size());
-    }
-
-    @Test
-    @DirtiesContext
     public void getAllByZ() throws ConstraintViolationException {
-        assertNotNull(repository.getAll());
-        assertEquals(0, repository.getAll().size());
+
+        WidgetRepository repository = new RepositoryImpl();
+
+        assertNotNull(repository.getAllOrderByZ());
+        assertEquals(0, repository.getAllOrderByZ().size());
 
         WidgetDelta testWidget = new WidgetDelta(0,0,0,0,0);
 
@@ -119,8 +98,9 @@ public class CustomInMemoryWidgetRepositoryTests {
 
 
     @Test
-    @DirtiesContext
     public void add() throws ConstraintViolationException {
+
+        WidgetRepository repository = new RepositoryImpl();
 
         WidgetDelta testWidget = new WidgetDelta(0,0,0,0,0);
 
@@ -134,8 +114,9 @@ public class CustomInMemoryWidgetRepositoryTests {
     }
 
     @Test
-    @DirtiesContext
     public void addZConflict() throws ConstraintViolationException {
+
+        WidgetRepository repository = new RepositoryImpl();
 
         WidgetDelta testWidget = new WidgetDelta(0,0,0,0,0);
 
@@ -145,8 +126,10 @@ public class CustomInMemoryWidgetRepositoryTests {
     }
 
     @Test
-    @DirtiesContext
     public void update() throws ConstraintViolationException {
+
+        WidgetRepository repository = new RepositoryImpl();
+
         WidgetDelta createDescriptor = new WidgetDelta(0,0,0,0,0);
         WidgetDelta updateDescriptor = new WidgetDelta(10,10,10,10,10);
 
@@ -163,8 +146,9 @@ public class CustomInMemoryWidgetRepositoryTests {
     }
 
     @Test
-    @DirtiesContext
     public void updateZConflict() throws ConstraintViolationException {
+
+        WidgetRepository repository = new RepositoryImpl();
 
         WidgetDelta createDescriptor1 = new WidgetDelta(0,0,0,0,0);
         WidgetDelta createDescriptor2 = new WidgetDelta(0,0,10,0,0);
@@ -177,8 +161,9 @@ public class CustomInMemoryWidgetRepositoryTests {
     }
 
     @Test
-    @DirtiesContext
     public void remove() throws ConstraintViolationException {
+
+        WidgetRepository repository = new RepositoryImpl();
 
         WidgetDelta createDescriptor1 = new WidgetDelta(0,0,0,0,0);
         WidgetDelta createDescriptor2 = new WidgetDelta(0,0,10,0,0);
@@ -190,31 +175,114 @@ public class CustomInMemoryWidgetRepositoryTests {
 
         repository.remove(createdWidget.getId());
 
-        assertEquals(2, repository.getAll().size());
         assertEquals(2, repository.getAllOrderByZ().size());
         assertNull(repository.get(createdWidget.getId()));
 
     }
 
     @Test
-    @DirtiesContext
     public void filteredByRectangle() throws ConstraintViolationException, NotSupportedException {
+
+        WidgetRepository repository = new RepositoryImpl();
 
         int x1=0,x2=50,y1=0,y2=100;
 
-        repository.add(new WidgetDelta(10,10,3,11,12));
-        repository.add(new WidgetDelta(200,20,4,21,20));
-        repository.add(new WidgetDelta(25,25,1,50,50));
+        Widget w1 = repository.add(new WidgetDelta(10,10,3,11,12));
+        Widget w2 = repository.add(new WidgetDelta(200,20,4,21,20));
+        Widget w3 = repository.add(new WidgetDelta(25,25,1,50,50));
 
         Collection<Widget> result = repository.getFilteredByRectangle(x1,y1,x2,y2);
 
         assertEquals(2, result.size());
-        Iterator<Widget> iterator = result.iterator();
-        assertEquals(25, iterator.next().getX());
-        assertEquals(10, iterator.next().getX());
 
+        boolean containWidget = false;
+        assertTrue(result.stream().map(w -> w.equals(w1)).reduce((l, r) -> l || r).orElse(false));
+        assertFalse(result.stream().map(w -> w.equals(w2)).reduce((l, r) -> l || r).orElse(false));
+        assertTrue(result.stream().map(w -> w.equals(w3)).reduce((l, r) -> l || r).orElse(false));
 
         //assertEquals(1,result.size());
 
+    }
+
+    static class WriteMonitor {
+        volatile public boolean complete = false;
+    }
+
+    @Test
+    public void ThreadedRead() throws ConstraintViolationException, InterruptedException {
+
+        RepositoryImpl repository = new RepositoryImpl();
+        repository.add(new WidgetDelta(1,1,0,1,1));
+
+        AtomicInteger writeIteration = new AtomicInteger(1);
+        AtomicInteger readIteration = new AtomicInteger(1);
+
+        int numberOfThreads = 4;
+        ExecutorService service = Executors.newFixedThreadPool(4);
+        CountDownLatch latch = new CountDownLatch(numberOfThreads);
+
+        AtomicInteger wrongReadCount = new AtomicInteger();
+
+        // reader
+        service.submit(() -> {
+            try {
+                for(int i=2; i<1000;i++) {
+                    while (writeIteration.get() <= i) {
+                        Thread.sleep(1);
+                    }
+                    wrongReadCount.addAndGet(repository.get(1).getZ()==i ? 0 : 1);
+                    readIteration.set(i);
+                }
+            }
+            catch (Exception e) {
+                e.printStackTrace();
+            }
+            latch.countDown();
+        });
+
+        // updater
+        service.submit(() -> {
+            try {
+                for(int i=1; i<1000; i++) {
+                    repository.update(1, new WidgetDelta(null, null, i, null, null));
+                    writeIteration.getAndAdd(1);
+                    while(readIteration.get()<i) {
+                        Thread.sleep(1);
+                    }
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+            latch.countDown();
+        });
+
+        // creator
+        service.submit(() -> {
+            try {
+                for(int i=1001;i<2000; i++) {
+                    repository.add(new WidgetDelta(i, i, i, i, i));
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+            latch.countDown();
+        });
+
+        // index reader
+        service.submit(() -> {
+            try {
+                for(int i=1001;i<2000; i++) {
+                    repository.getAllOrderByZ();
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+            latch.countDown();
+        });
+
+
+        latch.await();
+
+        assertEquals(0,wrongReadCount.get());
     }
 }

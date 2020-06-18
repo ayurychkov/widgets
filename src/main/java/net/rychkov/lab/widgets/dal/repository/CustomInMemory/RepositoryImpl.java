@@ -5,49 +5,39 @@ import net.rychkov.lab.widgets.dal.model.Widget;
 import net.rychkov.lab.widgets.dal.model.WidgetDelta;
 import net.rychkov.lab.widgets.dal.repository.ConstraintViolationException;
 import net.rychkov.lab.widgets.dal.repository.WidgetRepository;
-import net.rychkov.lab.widgets.dal.repository.WidgetRepositoryTransaction;
 import org.springframework.stereotype.Repository;
 
-import javax.validation.constraints.NotNull;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
 @Repository("customInMemory")
 public class RepositoryImpl implements WidgetRepository {
 
     /**
-     * Last version of repository content (widgets and indexes)
+     * List of repository indexes
+     * !!! Important: write-locking of multiple index MUST be in sequence of this array,
+     * otherwise - deadlocks possible
      */
-    private Version lastVersion;
+    private final List<RepositoryIndex> indexes;
 
     /**
-     * Transactions lock (only one transaction at same time)
+     * Index for filter 'by rectangle'
      */
-    private final ReentrantLock txLock;
+    private final ComplexIndex xyIndex;
 
     /**
-     * Sequence for transaction IDs
+     * Sorted by z-field
      */
-    private final AtomicLong txSequence;
+    private final FieldIndex<Integer> zIndex;
 
     /**
-     * Transaction's version of content
+     * Map id-widget
      */
-    private Version txVersion = null;
-
-    /**
-     * Active transaction ID
-     */
-    private long txId = 0;
-
-    /**
-     * Active transaction's thread ID
-     * All write-operations of this thread will be in transaction
-     */
-    private long txThreadId = 0;
+    private final ConcurrentMap<Integer, AtomicReference<Widget>> widgets;
 
     /**
      * Sequence for widget's id
@@ -55,214 +45,88 @@ public class RepositoryImpl implements WidgetRepository {
     private final AtomicInteger idSequence;
 
     public RepositoryImpl() {
-        txLock = new ReentrantLock();
-        txSequence = new AtomicLong(1);
-        lastVersion = new Version();
+
         idSequence = new AtomicInteger(1);
+
+        widgets = new ConcurrentHashMap<>();
+
+        zIndex = new FieldIndex<>("Z",true, Widget::getZ, WidgetDelta::getZ);
+        xyIndex = new ComplexIndex();
+        indexes = Arrays.asList(zIndex, xyIndex);
     }
-
-    /**
-     * Get version of content for current thread
-     * if thread has active transaction - transaction version of content
-     * else - last common version
-     * @return Version of content
-     */
-    private Version getVersion() {
-        if(txThreadId !=Thread.currentThread().getId()) {
-            return lastVersion;
-        }
-        else {
-            return txVersion;
-        }
-    }
-
-    //region Transactions
-
-    public WidgetRepositoryTransaction BeginTransaction() {
-        txLock.lock();
-        txThreadId = Thread.currentThread().getId();
-        txId = txSequence.getAndAdd(1);
-        Transaction tx = new Transaction(txId, this);
-        txVersion = new Version(lastVersion);
-        return tx;
-    }
-
-    public void txCommit(WidgetRepositoryTransaction tx) {
-        // if not current transaction - say goodbye
-        if(tx==null || tx.getId()!= txId) {
-            // TODO: create custom exception
-            throw new NoSuchElementException("Wrong transaction for commit");
-        }
-
-        // apply new data version
-        lastVersion = txVersion;
-
-        // clear transaction
-        txThreadId = 0;
-        txId = 0;
-        txVersion = null;
-
-        txLock.unlock();
-    }
-
-    public void txRollback(WidgetRepositoryTransaction tx) {
-        // if not current transaction - say goodbye
-        if(tx==null || tx.getId()!= txId) {
-            // TODO: create custom exception
-            throw new NoSuchElementException("Wrong transaction for rollback");
-        }
-
-        // clear transaction
-        txThreadId = 0;
-        txId = 0;
-        txVersion = null;
-
-        txLock.unlock();
-    }
-
-    private WidgetRepositoryTransaction beginTransactionIfNotExist() {
-
-        if(txThreadId !=Thread.currentThread().getId()) {
-            return BeginTransaction();
-        }
-
-        return null;
-    }
-
-    private void commitTransactionIfExist(WidgetRepositoryTransaction tx) {
-        if(tx!=null) { tx.commit(); }
-    }
-
-    private void rollbackTransactionIfExist(WidgetRepositoryTransaction tx) {
-        if(tx!=null) { tx.rollback(); }
-    }
-
-    //endregion
 
     //region Read
 
     @Override
     public Widget get(int id) {
-        return getVersion().getWidgets().get(id);
-    }
-
-    @Override
-    public Collection<Widget> getAll() {
-        return getVersion().getWidgets().values();
-    }
-
-    @Override
-    public Page<Widget> getAll(int pageNum, int pageSize) {
-
-        Version currentVersion = getVersion();
-
-        int elementCount = currentVersion.getWidgets().size();
-
-        return new Page<>(
-                pageNum,
-                pageSize,
-                (elementCount/pageSize)+1,
-                elementCount,
-                currentVersion.getWidgets().values().stream().skip(pageNum*pageSize).limit(pageSize).collect(Collectors.toList())
-        );
+        AtomicReference<Widget> holder = widgets.get(id);
+        return holder!=null ? holder.get() : null;
     }
 
     @Override
     public Collection<Widget> getAllOrderByZ() {
-        return getVersion().getZIndex().values();
+        zIndex.readLock();
+        try {
+            return zIndex.get().stream().map(widgetId -> widgets.get(widgetId).get()).collect(Collectors.toList());
+        }
+        finally {
+            zIndex.readUnlock();
+        }
     }
 
     @Override
     public Page<Widget> getAllOrderByZ(int pageNum, int pageSize) {
-        Version currentVersion = getVersion();
+        zIndex.readLock();
+        try {
 
-        int elementCount = currentVersion.getZIndex().size();
+            int elementCount = zIndex.size();
 
-        return new Page<>(
-                pageNum,
-                pageSize,
-                (elementCount/pageSize)+1,
-                elementCount,
-                currentVersion.getZIndex().values().stream().skip(pageNum*pageSize).limit(pageSize).collect(Collectors.toList())
-        );
+            return new Page<>(
+                    pageNum,
+                    pageSize,
+                    (elementCount / pageSize) + 1,
+                    elementCount,
+                    zIndex.get().stream().skip(pageNum * pageSize).limit(pageSize)
+                            .map(widgetId -> widgets.get(widgetId).get()).collect(Collectors.toList())
+            );
+        }
+        finally {
+            zIndex.readUnlock();
+        }
+    }
+
+    @Override
+    public Integer getMaxZ() {
+        zIndex.readLock();
+        try {
+            // todo: make field?
+            return zIndex.lastKey();
+        }
+        finally {
+            zIndex.readUnlock();
+        }
     }
 
     @Override
     public Collection<Widget> getFilteredByRectangle(int x1, int y1, int x2, int y2) {
 
-        // include high borders
-        int includedBottomBorder = y2+1;
-        int includedRightBorder = x2+1;
-
-        Version txVersion = getVersion();
-
-        HashMap<Integer, Widget> hash = new HashMap<Integer, Widget>();
-        TreeSet<Widget> result = new TreeSet<>(Comparator.comparing(Widget::getZ));
-
-        txVersion.getRIndex().tailMap(x1).headMap(includedRightBorder).values().forEach(x->
-                x.tailMap(y1).headMap(includedBottomBorder).values().forEach(y->
-                        y.forEach(w->
-                        {
-                            if (hash.containsKey(w.getId())) {
-                                result.add(w);
-                            }
-                            else {
-                                hash.put(w.getId(), w);
-                            }
-                        })
-                )
-        );
-
-        return result;
+        xyIndex.readLock();
+        try {
+            return xyIndex.getFilteredByRectangle(x1, y1, x2, y2).stream()
+                    .map(widgetId -> widgets.get(widgetId).get())
+                    .collect(Collectors.toList());
+        }
+        finally {
+            xyIndex.readUnlock();
+        }
     }
 
     //endregion
 
-    // region rIndex helpers
-
-    private TreeMap<Integer, TreeMap<Integer, ArrayList<Widget>>> rIndex = new TreeMap<>();
-
-    public void addPointToRIndex(Version version, int x, int y, Widget widget) {
-        version.getRIndex().computeIfAbsent(x, k -> new TreeMap<>())
-                .computeIfAbsent(y, k -> new ArrayList<>())
-                .add(widget);
-    }
-
-    public void addToRIndex(Version version, Widget widget) {
-        // left top corner
-        addPointToRIndex(version, widget.getX()-widget.getWidth()/2, widget.getY()-widget.getHeight()/2, widget);
-        // right bottom corner
-        addPointToRIndex(version, widget.getX()+widget.getWidth()/2, widget.getY()+widget.getHeight()/2, widget);
-    }
-
-    public void deletePointFromRIndex(Version version, int x, int y, Widget widget) {
-        TreeMap<Integer, ArrayList<Widget>> yLayer = version.getRIndex().get(x);
-        ArrayList<Widget> widgets = yLayer.get(y);
-        widgets.remove(widget);
-
-        // clear if needed
-        if (widgets.isEmpty()) {
-            yLayer.remove(y);
-        }
-
-        if(yLayer.isEmpty()) {
-            rIndex.remove(x);
-        }
-    }
-
-    public void deleteFromRIndex(Version version, Widget widget) {
-        // left top corner
-        deletePointFromRIndex(version, widget.getX()-widget.getWidth()/2, widget.getY()-widget.getHeight()/2, widget);
-        // right bottom corner
-        deletePointFromRIndex(version, widget.getX()+widget.getWidth()/2, widget.getY()+widget.getHeight()/2, widget);
-    }
-
-    // endregion
-
     //region Write
 
     @Override
-    public Widget add(@NotNull WidgetDelta widgetDelta) throws ConstraintViolationException {
+    public Widget add(final WidgetDelta widgetDelta) throws ConstraintViolationException {
 
         // check validation
         if(widgetDelta==null) {
@@ -273,61 +137,164 @@ public class RepositoryImpl implements WidgetRepository {
             throw new NullPointerException("Widget must have none null z-coordinate");
         }
 
+        ArrayList<RepositoryIndex> lockedIndexes = new ArrayList<>();
 
-        // start new transaction (if not exist global transaction)
-        WidgetRepositoryTransaction localTx = beginTransactionIfNotExist();
+        Widget createdWidget = null;
 
         try {
-            Version txVersion = getVersion();
+            // write-lock affected indexes in sequence of indexes array
+            for (RepositoryIndex i : indexes) {
 
-            // check z-uniq constrain
-            if(txVersion.getZIndex().containsKey(widgetDelta.getZ())) {
-                throw new ConstraintViolationException("Not unique z-coordinate");
+                i.writeLock();
+                lockedIndexes.add(i);
+
+                if(i.isUnique() && i.checkConstrainsViolation(widgetDelta)) {
+                    throw new ConstraintViolationException("Not unique for " + i.getName());
+                }
             }
 
             // create widget
             int newId = idSequence.getAndAdd(1);
-            Widget createdWidget = widgetDelta.createNewWidget(newId);
+            createdWidget = widgetDelta.createNewWidget(newId);
 
-            // add to z-index
-            txVersion.getZIndex().put(createdWidget.getZ(), createdWidget);
+            widgets.put(newId, new AtomicReference<>(createdWidget));
 
-            // add to r-index
-            addToRIndex(txVersion, createdWidget);
+            // add to affected indexes
+            for (RepositoryIndex i : lockedIndexes) {
+                i.add(createdWidget);
+            }
 
-            // add to repository
-            txVersion.getWidgets().put(newId, createdWidget);
-
-            // commit local transaction (if created), don't commit global transaction
-            commitTransactionIfExist(localTx);
-
-            return createdWidget;
         }
-        catch( Exception e) {
-            rollbackTransactionIfExist(localTx);
-            throw e;
+        finally {
+            // unlock locked indexes
+            for(RepositoryIndex i : lockedIndexes) {
+                i.writeUnlock();
+            }
         }
+
+        return createdWidget;
+
     }
 
     @Override
-    public Widget remove(int id) {
+    public Collection<Widget> addAll(Collection<WidgetDelta> deltas) throws ConstraintViolationException {
 
-        WidgetRepositoryTransaction localTx = beginTransactionIfNotExist();
+        if(! deltas.stream().map(d -> d.getZ()!=null).reduce((l,r) -> l && r).orElse(true) ) {
+            throw new NullPointerException("Widget must have none null z-coordinate");
+        }
 
-        Version txVersion = getVersion();
+        ArrayList<RepositoryIndex> lockedIndexes = new ArrayList<>();
 
-        // remove widget
-        Widget result = txVersion.getWidgets().remove(id);
+        List<Widget> createdWidgets = new ArrayList<>();
 
-        // remove from z-index
-        txVersion.getZIndex().remove(result.getZ(), result);
+        try {
+            // write-lock affected indexes in sequence of indexes array
+            for (RepositoryIndex i : indexes) {
 
-        // remove from r-index
-        deleteFromRIndex(txVersion, result);
+                i.writeLock();
+                lockedIndexes.add(i);
 
-        commitTransactionIfExist(localTx);
+                if(i.isUnique()) {
+                    if(! deltas.stream().map(i::checkConstrainsViolation).reduce((l, r) -> l && r).orElse(true) ) {
+                        throw new ConstraintViolationException("Not unique for " + i.getName());
+                    }
+                }
+            }
 
-        return result;
+            // create widgets
+            for(WidgetDelta wd : deltas) {
+                Widget widget = wd.createNewWidget(idSequence.getAndAdd(1));
+                createdWidgets.add(widget);
+                widgets.put(widget.getId(), new AtomicReference<>(widget));
+            }
+
+
+
+            // add to affected indexes
+            for (RepositoryIndex i : lockedIndexes) {
+                createdWidgets.forEach(i::add);
+            }
+
+        }
+        finally {
+            // unlock locked indexes
+            for(RepositoryIndex i : lockedIndexes) {
+                i.writeUnlock();
+            }
+        }
+
+        return createdWidgets;
+    }
+
+    @Override
+    public Widget remove(int widgetId) {
+
+        if(widgets.get(widgetId)==null) {
+            throw new NoSuchElementException("No widgets with id "+widgetId);
+        }
+
+        ArrayList<RepositoryIndex> lockedIndexes = new ArrayList<>();
+
+        Widget deletedWidget = null;
+
+        try {
+            // write-lock affected indexes in sequence of indexes array
+            for (RepositoryIndex i : indexes) {
+                i.writeLock();
+                lockedIndexes.add(i);
+            }
+
+
+            deletedWidget = widgets.remove(widgetId).get();
+
+            // add to affected indexes
+            for (RepositoryIndex i : lockedIndexes) {
+                i.remove(deletedWidget);
+            }
+
+        }
+        finally {
+            // unlock locked indexes
+            for(RepositoryIndex i : lockedIndexes) {
+                i.writeUnlock();
+            }
+        }
+
+        return deletedWidget;
+    }
+
+    @Override
+    public Collection<Widget> removeAll(Collection<Integer> ids) {
+
+        ArrayList<RepositoryIndex> lockedIndexes = new ArrayList<>();
+
+        List<Widget> deletedWidgets = new ArrayList<>();
+
+        try {
+            // write-lock affected indexes in sequence of indexes array
+            for (RepositoryIndex i : indexes) {
+                i.writeLock();
+                lockedIndexes.add(i);
+            }
+
+            for (Integer id : ids) {
+                deletedWidgets.add(widgets.remove(id).get());
+            }
+
+            // remove from affected indexes
+            for (RepositoryIndex i : lockedIndexes) {
+                deletedWidgets.forEach(i::remove);
+            }
+
+        }
+        finally {
+            // unlock locked indexes
+            for(RepositoryIndex i : lockedIndexes) {
+                i.writeUnlock();
+            }
+        }
+
+        return deletedWidgets;
     }
 
     /**
@@ -339,56 +306,105 @@ public class RepositoryImpl implements WidgetRepository {
      * @throws NoSuchElementException No widget with such id in repository
      */
     @Override
-    public Widget update(int widgetId, WidgetDelta widgetDelta)
+    public Widget update(int widgetId, final WidgetDelta widgetDelta)
             throws IllegalArgumentException, NoSuchElementException, ConstraintViolationException {
 
         if(widgetDelta==null) {
             throw new IllegalArgumentException("widgetDelta must be not null");
         }
 
-        WidgetRepositoryTransaction localTx = beginTransactionIfNotExist();
+        ArrayList<RepositoryIndex> lockedIndexes = new ArrayList<>();
 
-        Version txVersion = getVersion();
+        Widget changedWidget = null;
 
-        Widget originWidget = txVersion.getWidgets().get(widgetId);
+        try {
+            // write-lock affected indexes in sequence of indexes array
+            for (RepositoryIndex i : indexes) {
+                if(i.isAffected(widgetDelta)) {
+                    i.writeLock();
+                    lockedIndexes.add(i);
 
-        if(originWidget==null) {
-            throw new NoSuchElementException("No widget with id \""+widgetId+"\" found in repository");
+                    if (i.isUnique() && i.checkConstrainsViolation(widgetDelta)) {
+                        throw new ConstraintViolationException("Not unique for " + i.getName());
+                    }
+                }
+            }
+
+            // remove origin from indexes
+            Widget origin = widgets.get(widgetId).get();
+            for(RepositoryIndex i : lockedIndexes) {
+                i.remove(origin);
+            }
+
+            // update widget
+            changedWidget = widgets.get(widgetId).updateAndGet(widgetDelta::applyTo);
+
+            // add to affected indexes
+            for (RepositoryIndex i : lockedIndexes) {
+                i.add(changedWidget);
+            }
+
         }
-
-        Widget changedWidget = widgetDelta.createUpdatedWidget(originWidget);
-
-        // if no changes - rollback and return
-        if(changedWidget==null) {
-            rollbackTransactionIfExist(localTx);
-            return originWidget;
+        finally {
+            // unlock locked indexes
+            for(RepositoryIndex i : lockedIndexes) {
+                i.writeUnlock();
+            }
         }
-
-        // check constrains (unique z-coordinate)
-        if(
-                widgetDelta.getZ()!=null &&
-                widgetDelta.getZ()!=originWidget.getZ() &&
-                txVersion.getZIndex().containsKey(widgetDelta.getZ())
-        ) {
-            // already has widget with same z-coordinate
-            rollbackTransactionIfExist(localTx);
-            throw new ConstraintViolationException("Not unique z-coordinate");
-        }
-
-        // update widget
-        txVersion.getWidgets().put(changedWidget.getId(), changedWidget);
-
-        // update z-index
-        txVersion.getZIndex().remove(originWidget.getZ());
-        txVersion.getZIndex().put(changedWidget.getZ(), changedWidget);
-
-        // update r-index
-        deleteFromRIndex(txVersion, originWidget);
-        addToRIndex(txVersion, changedWidget);
-
-        commitTransactionIfExist(localTx);
 
         return changedWidget;
+    }
+
+    @Override
+    public Collection<Widget> updateAll(Map<Integer, WidgetDelta> changes) throws IllegalArgumentException, NoSuchElementException, ConstraintViolationException {
+
+        ArrayList<RepositoryIndex> lockedIndexes = new ArrayList<>();
+
+        List<Widget> changedWidgets = new ArrayList<>();
+
+        try {
+            // write-lock affected indexes in sequence of indexes array
+            for (RepositoryIndex i : indexes) {
+                if(changes.values().stream().map(i::isAffected).reduce( (l,r) -> l || r ).orElse(false)) {
+                    i.writeLock();
+                    lockedIndexes.add(i);
+                }
+            }
+
+
+            List<Widget> origin = changes.keySet().stream().map(id -> widgets.get(id).get()).collect(Collectors.toList());
+
+            // remove origin from indexes
+            for (RepositoryIndex lockedIndex : lockedIndexes) {
+                for (Widget w : origin) {
+                    if (lockedIndex.isAffected(changes.get(w.getId()))) {
+                        lockedIndex.remove(w);
+                    }
+                }
+            }
+
+            // update widget
+            for (Widget w : origin) {
+                changedWidgets.add(widgets.get(w.getId()).updateAndGet(changes.get(w.getId())::applyTo));
+            };
+
+            // add to affected indexes
+            for (RepositoryIndex lockedIndex : lockedIndexes) {
+                for (Widget w : changedWidgets) {
+                    if (lockedIndex.isAffected(changes.get(w.getId()))) {
+                        lockedIndex.add(w);
+                    }
+                }
+            }
+        }
+        finally {
+            // unlock locked indexes
+            for(RepositoryIndex i : lockedIndexes) {
+                i.writeUnlock();
+            }
+        }
+
+        return changedWidgets;
     }
 
     //endregion

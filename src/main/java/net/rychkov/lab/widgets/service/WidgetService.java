@@ -48,7 +48,7 @@ public interface WidgetService {
      * @param widget WidgetCreateRequest contains values for setting to properties and nulls for defaults
      * @return Created widget
      */
-    Widget addWidget(WidgetCreateRequest widget);
+    Widget addWidget(final WidgetCreateRequest widget);
 
     /**
      * Update widget in repository
@@ -59,7 +59,7 @@ public interface WidgetService {
      * @throws NoSuchElementException No widget with such ID in repository
      * @throws ConstraintViolationException Constrain violation like non unique z-coordinate
      */
-    Widget updateWidget(int widgetId, WidgetUpdateRequest widget) throws IllegalArgumentException, NoSuchElementException, ConstraintViolationException;
+    Widget updateWidget(int widgetId, final WidgetUpdateRequest widget) throws IllegalArgumentException, NoSuchElementException, ConstraintViolationException;
 
     /**
      * Remove widget from repository

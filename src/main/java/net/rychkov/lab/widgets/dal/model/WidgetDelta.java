@@ -65,8 +65,27 @@ public class WidgetDelta {
         this.height = height;
     }
 
+    /**
+     * Has changes for any field
+     * @return true - any field not null, otherwise - false
+     */
     public boolean hasChanges() {
         return x!=null || y!=null || z!=null || width!=null || height!=null;
+    }
+
+    /**
+     * Check applying this delta to widget has any effects (change any fields)
+     * @param widget Widget for check applying
+     * @return true - if applying has effects on widget, otherwise - false
+     */
+    public boolean checkChanging(Widget widget) {
+        return !(
+                (x==null || x==widget.getX()) &&
+                (y==null || y==widget.getY()) &&
+                (z==null || z==widget.getZ()) &&
+                (width==null || width==widget.getWidth()) &&
+                (height==null || height==widget.getHeight())
+        );
     }
 
     @Override
@@ -127,15 +146,32 @@ public class WidgetDelta {
         );
     }
 
+    public Widget applyTo(Widget origin) {
+        return new Widget(
+                origin.getId(),
+                this.getX()!=null ? this.getX() : origin.getX(),
+                this.getY()!=null ? this.getY() : origin.getY(),
+                this.getZ()!=null ? this.getZ() : origin.getZ(),
+                this.getWidth()!=null ? this.getWidth() : origin.getWidth(),
+                this.getHeight()!=null ? this.getHeight() : origin.getHeight(),
+                new Date()
+        );
+    }
+
     /**
-     * Create updated widget (new version) by delta
+     * Create updated widget (new version) by delta or return null - if nothing changed
      * @param origin Original widget
-     * @return Updated widget
+     * @return Updated widget or null - if nothing changed
      */
     public Widget createUpdatedWidget(@NotNull Widget origin) {
 
         // no changes
         if(!this.hasChanges()) {
+            return null;
+        }
+
+        // no changes
+        if(!checkChanging(origin)) {
             return null;
         }
 

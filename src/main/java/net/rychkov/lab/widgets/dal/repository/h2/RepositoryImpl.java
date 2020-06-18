@@ -4,16 +4,13 @@ import net.rychkov.lab.widgets.dal.model.Widget;
 import net.rychkov.lab.widgets.dal.model.WidgetDelta;
 import net.rychkov.lab.widgets.dal.repository.ConstraintViolationException;
 import net.rychkov.lab.widgets.dal.repository.WidgetRepository;
-import net.rychkov.lab.widgets.dal.repository.WidgetRepositoryTransaction;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Pageable;
-import org.springframework.data.domain.Sort;
+import org.springframework.data.domain.*;
 import org.springframework.stereotype.Repository;
 
 import javax.transaction.NotSupportedException;
 import java.util.Collection;
-import java.util.Date;
+import java.util.List;
+import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
@@ -25,6 +22,8 @@ public class RepositoryImpl implements WidgetRepository {
      * JPA repository
      */
     private final DbWidgetRepository db;
+
+    ClassLoader cl;
 
     /**
      * Sort for z-coordinate
@@ -61,16 +60,6 @@ public class RepositoryImpl implements WidgetRepository {
     }
 
     @Override
-    public Collection<Widget> getAll() {
-        return db.findAll();
-    }
-
-    @Override
-    public net.rychkov.lab.widgets.dal.model.Page<Widget> getAll(int pageNum, int pageSize) {
-        return getAll(PageRequest.of(pageNum,pageSize));
-    }
-
-    @Override
     public Collection<Widget> getAllOrderByZ() {
         return db.findAll(zSort);
     }
@@ -78,6 +67,11 @@ public class RepositoryImpl implements WidgetRepository {
     @Override
     public net.rychkov.lab.widgets.dal.model.Page<Widget> getAllOrderByZ(int pageNum, int pageSize) {
         return getAll(PageRequest.of(pageNum,pageSize, zSort));
+    }
+
+    @Override
+    public Integer getMaxZ() {
+        return db.getMaxZ();
     }
 
     @Override
@@ -92,25 +86,6 @@ public class RepositoryImpl implements WidgetRepository {
 
     // endregion
 
-    // region Transaction
-
-    @Override
-    public WidgetRepositoryTransaction BeginTransaction() {
-        txLock.lock();
-        return new Transaction(0, this);
-    }
-
-    public void txCommit(Transaction tx) {
-        db.flush();
-        txLock.unlock();
-    }
-
-    public void txRollback(Transaction tx) {
-        txLock.unlock();
-    }
-
-    // endregion
-
     // region Write
 
     @Override
@@ -121,15 +96,36 @@ public class RepositoryImpl implements WidgetRepository {
         }
 
         Widget newWidget = widgetDelta.createNewWidget(0);
-        db.save(newWidget);
+        db.saveAndFlush(newWidget);
         return newWidget;
+    }
+
+    @Override
+    public Collection<Widget> addAll(Collection<WidgetDelta> deltas) throws ConstraintViolationException {
+        try {
+            Collection<Widget> result = db.saveAll(deltas.stream().map(d -> d.createNewWidget(0)).collect(Collectors.toList()));
+            db.flush();
+            return result;
+        }
+        catch(org.hibernate.exception.ConstraintViolationException e) {
+            throw new ConstraintViolationException(e);
+        }
     }
 
     @Override
     public Widget remove(int id) {
         Widget widget = db.getOne(id);
         db.deleteById(id);
+        db.flush();
         return widget;
+    }
+
+    @Override
+    public Collection<Widget> removeAll(Collection<Integer> ids) {
+        Collection<Widget> result = db.findAllById(ids);
+        db.deleteAll(result);
+        db.flush();
+        return result;
     }
 
     @Override
@@ -141,8 +137,18 @@ public class RepositoryImpl implements WidgetRepository {
 
         Widget origin = db.getOne(widgetId);
         Widget newWidget = widgetDelta.createUpdatedWidget(origin);
-        db.save(newWidget);
+        db.saveAndFlush(newWidget);
         return newWidget;
+    }
+
+    @Override
+    public Collection<Widget> updateAll(Map<Integer, WidgetDelta> changes) throws IllegalArgumentException, NoSuchElementException, ConstraintViolationException {
+
+        List<Widget> origin = db.findAllById(changes.keySet());
+        List<Widget> updated = origin.stream().map(w -> changes.get(w.getId()).createUpdatedWidget(w)).collect(Collectors.toList());
+        db.saveAll(updated);
+        db.flush();
+        return updated;
     }
 
     // endregion

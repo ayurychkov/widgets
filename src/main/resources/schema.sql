@@ -1,7 +1,7 @@
-create sequence hibernate_sequence;
+/*create schema lab;
 
-create table widget (
-    id serial not null,
+create table lab.widget (
+    id int auto_increment not null,
     x int not null,
     y int not null,
     z int not null,
@@ -11,5 +11,6 @@ create table widget (
     constraint widget_pk primary key (id)
 );
 
-create unique index widget_z_ix on widget (z);
+create unique index lab.widget_z_ix on lab.widget (z);
 
+*/

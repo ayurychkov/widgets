@@ -1,12 +1,17 @@
 package net.rychkov.lab.widgets;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultHandlers.print;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import net.rychkov.lab.widgets.api.controllers.WidgetController;
+import org.hamcrest.Description;
+import org.hamcrest.Matcher;
+import org.hamcrest.core.AnyOf;
+import org.hamcrest.core.IsEqual;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -14,6 +19,9 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.web.servlet.MockMvc;
+
+import java.util.Arrays;
+import java.util.TreeMap;
 
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -31,7 +39,6 @@ class WidgetsApplicationTests {
 	}
 
 	@Test
-	@DirtiesContext
 	public void addTest() throws Exception {
 
 		this.mockMvc.perform(post("/widget")
@@ -40,7 +47,6 @@ class WidgetsApplicationTests {
 	}
 
 	@Test
-	@DirtiesContext
 	public void addAndUpdateTest() throws Exception {
 
 		this.mockMvc.perform(post("/widget")
@@ -53,30 +59,29 @@ class WidgetsApplicationTests {
 	}
 
 	@Test
-	@DirtiesContext
 	public void filterTest() throws Exception {
 
 		this.mockMvc.perform(
 				post("/widget")
-				.contentType(MediaType.APPLICATION_JSON).content("{\"x\":10,\"y\":10,\"z\":3,\"width\":11,\"height\":12}")
+				.contentType(MediaType.APPLICATION_JSON).content("{\"x\":510,\"y\":510,\"z\":3,\"width\":11,\"height\":12}")
 		).andExpect(status().isCreated());
 
 		this.mockMvc.perform(
 				post("/widget")
-				.contentType(MediaType.APPLICATION_JSON).content("{\"x\":200,\"y\":20,\"z\":4,\"width\":21,\"height\":20}")
+				.contentType(MediaType.APPLICATION_JSON).content("{\"x\":700,\"y\":520,\"z\":4,\"width\":21,\"height\":20}")
 		).andExpect(status().isCreated());
 
 		this.mockMvc.perform(
 				post("/widget")
-				.contentType(MediaType.APPLICATION_JSON).content("{\"x\":25,\"y\":25,\"z\":1,\"width\":50,\"height\":50}")
+				.contentType(MediaType.APPLICATION_JSON).content("{\"x\":525,\"y\":525,\"z\":1,\"width\":50,\"height\":50}")
 		).andExpect(status().isCreated());
 
 
 		this.mockMvc.perform(
-				get("/widget/filter?x1=0&y1=0&x2=50&y2=100")
+				get("/widget/filter?x1=500&y1=500&x2=550&y2=600")
 		).andDo(print())
 		.andExpect(status().isOk())
-		.andExpect(jsonPath("$[0].id").value(1))
-		.andExpect(jsonPath("$[1].id").value(3));
+		.andExpect(jsonPath("$[0].id").value(AnyOf.anyOf(IsEqual.equalTo(1),IsEqual.equalTo(3))))
+		.andExpect(jsonPath("$[1].id").value(AnyOf.anyOf(IsEqual.equalTo(1),IsEqual.equalTo(3))));
 	}
 }

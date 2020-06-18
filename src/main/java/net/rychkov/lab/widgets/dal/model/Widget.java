@@ -15,6 +15,7 @@ import java.util.Date;
 @Immutable
 @Entity
 @Access(AccessType.FIELD)
+@Table(name="WIDGET", indexes = {@Index(name = "widget_z_ix", columnList = "z", unique = true)})
 public final class Widget implements Cloneable, Serializable {
 
     /**

@@ -2,21 +2,17 @@ package net.rychkov.lab.widgets.service;
 
 import net.rychkov.lab.widgets.api.model.WidgetCreateRequest;
 import net.rychkov.lab.widgets.api.model.WidgetUpdateRequest;
-import net.rychkov.lab.widgets.dal.model.Page;
-import net.rychkov.lab.widgets.dal.model.Widget;
-import net.rychkov.lab.widgets.dal.model.WidgetChange;
-import net.rychkov.lab.widgets.dal.model.WidgetDelta;
+import net.rychkov.lab.widgets.dal.model.*;
 import net.rychkov.lab.widgets.dal.repository.ConstraintViolationException;
 import net.rychkov.lab.widgets.dal.repository.WidgetRepository;
-import net.rychkov.lab.widgets.dal.repository.WidgetRepositoryTransaction;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import javax.transaction.NotSupportedException;
 import javax.validation.constraints.NotNull;
 import java.util.*;
+import java.util.concurrent.locks.ReentrantLock;
 
 @Service
 public class DefaultWidgetServiceImpl implements WidgetService {
@@ -26,8 +22,17 @@ public class DefaultWidgetServiceImpl implements WidgetService {
      */
     private final WidgetRepository repository;
 
+    // Best solution - move LockService outside and inject as bean
+    // because it can move to another service/server (like as lock throw DB locks)
+    // but not now
+    /**
+     * Used for shifting widgets (z conflicts)
+     * Write only lock
+     */
+    private final ReentrantLock zLock;
+
     @Value("${widgets.pagesize}")
-    private Integer pageSize = 10;
+    private final Integer pageSize = 10;
 
     /**
      * z-coordinate step for new widgets (max z of existed widgets plus step)
@@ -37,6 +42,21 @@ public class DefaultWidgetServiceImpl implements WidgetService {
 
     public DefaultWidgetServiceImpl(@Qualifier("repository") WidgetRepository repository) {
         this.repository = repository;
+        zLock = new ReentrantLock();
+    }
+
+    /**
+     * Lock z-index changes
+     */
+    private void lockZ() {
+        zLock.lock();
+    }
+
+    /**
+     * Unlock z-index changes
+     */
+    private void unlockZ() {
+        zLock.unlock();
     }
 
     /**
@@ -84,7 +104,7 @@ public class DefaultWidgetServiceImpl implements WidgetService {
      * @param all Ordered by z collection of all widgets
      * @throws ConstraintViolationException Unique z constraint violation
      */
-    private void shift(WidgetDelta widgetToBeInserted, List<Widget> all) throws ConstraintViolationException {
+    private void shift(WidgetDelta widgetToBeInserted, final List<Widget> all) throws ConstraintViolationException {
         int allSize = all.size();
 
         if(allSize==0) {
@@ -106,7 +126,7 @@ public class DefaultWidgetServiceImpl implements WidgetService {
                 // middle element
                 int z = widgetToBeInserted.getZ();
 
-                ArrayList<WidgetChange> updateQueue = new ArrayList<>();
+                Map<Integer, WidgetDelta> updateQueue = new HashMap<>();
 
                 for(int i = insertPosition; i<allSize; i++) {
 
@@ -121,30 +141,27 @@ public class DefaultWidgetServiceImpl implements WidgetService {
                     z += i+1==allSize ? Z_STEP : Math.round(((float)all.get(i+1).getZ()-z)/2);
                     WidgetDelta changes = new WidgetDelta();
                     changes.setZ(z);
-                    updateQueue.add(new WidgetChange(all.get(i).getId(), changes));
+                    updateQueue.put(all.get(i).getId(), changes);
                 }
 
                 if((float)updateQueue.size()/allSize>0.5) {
                     // optimisation: force rebuild z-index (only part)
+                    updateQueue.clear();
                     for(int i=all.size()-1; i>=insertPosition; i--) {
                         WidgetDelta widgetDelta = new WidgetDelta(null, null,widgetToBeInserted.getZ()+Z_STEP*(i-insertPosition+1), null, null);
-                        repository.update(all.get(i).getId(), widgetDelta);
+                        updateQueue.put(all.get(i).getId(), widgetDelta);
+                        //repository.update(all.get(i).getId(), widgetDelta);
                     }
                 }
-                else {
-                    // backward iterating for change z-coordinate of widgets with collision
-                    for (int i = updateQueue.size() - 1; i >= 0; i--) {
-                        WidgetChange change = updateQueue.get(i);
-                        repository.update(change.getId(), change.getDelta());
-                    }
-                }
+
+                repository.updateAll(updateQueue);
+
             }
 
         }
     }
 
     @Override
-    @Transactional
     public Widget addWidget(WidgetCreateRequest widget) {
 
         // mapping
@@ -155,48 +172,48 @@ public class DefaultWidgetServiceImpl implements WidgetService {
         delta.setY(widget.getY());
         delta.setZ(widget.getZ());
 
-        WidgetRepositoryTransaction tx = repository.BeginTransaction();;
 
         // adding
+        lockZ();
         try {
+            
+            if (delta.getZ()==null) {
 
-            List<Widget> all = new ArrayList<>(repository.getAllOrderByZ());
-            int allSize = all.size();
+                Integer maxZ = repository.getMaxZ();
 
-            // z-coordinate not set
-            if(delta.getZ()==null) {
-                // if no widgets in repository - set 0 z-coordinate
-                // else set z-coordinate of last widget (in sorted list) plus Z_STEP constant
-                delta.setZ(allSize==0 ? 0 : all.get(allSize-1).getZ()+Z_STEP);
+                // if no widgets in repository (maxZ==null) - set 0 z-coordinate
+                // else set max z-coordinate of widgets plus Z_STEP constant
+                delta.setZ(maxZ!=null ? maxZ+Z_STEP : 0);
             }
             else {
+                List<Widget> all = new ArrayList<>(repository.getAllOrderByZ());
+                int allSize = all.size();
+
+                // z-coordinate not set
                 shift(delta, all);
             }
 
-
             Widget result = repository.add(delta);
 
-            tx.commit();
             return result;
         }
         catch(ConstraintViolationException e) {
-            if (tx != null) {
-                tx.rollback();
-            }
             throw new RuntimeException(e);
         }
-        catch(Exception e) {
-            if (tx != null) {
-                tx.rollback();
-            }
-            throw e;
+        finally {
+            unlockZ();
         }
     }
 
     @Override
-    @Transactional
     public Widget removeWidget(int id){
-        return repository.remove(id);
+        lockZ();
+        try {
+            return repository.remove(id);
+        }
+        finally {
+            unlockZ();
+        }
     }
 
     @Override
@@ -226,7 +243,6 @@ public class DefaultWidgetServiceImpl implements WidgetService {
     }
 
     @Override
-    @Transactional
     public Widget updateWidget(int widgetId, WidgetUpdateRequest widget)
             throws IllegalArgumentException, NoSuchElementException, ConstraintViolationException {
 
@@ -242,20 +258,19 @@ public class DefaultWidgetServiceImpl implements WidgetService {
             return repository.update(widgetId, delta);
         }
 
-        WidgetRepositoryTransaction tx = repository.BeginTransaction();
         Widget origin = repository.get(widgetId);
 
-        // nothing to update - no widget with widgetId found
         if (origin == null) {
             throw new NoSuchElementException("No widget found");
         }
+
+        lockZ();
 
         try {
 
             // no z-coordinate changes
             if (delta.getZ() == origin.getZ()) {
                 Widget result = repository.update(widgetId, delta);
-                tx.commit();
                 return result;
             }
 
@@ -266,7 +281,6 @@ public class DefaultWidgetServiceImpl implements WidgetService {
             // no z-coordinate conflicts
             if (insertPosition>=all.size() || all.get(insertPosition).getZ() > delta.getZ()) {
                 Widget result = repository.update(widgetId, delta);
-                tx.commit();
                 return result;
             }
 
@@ -275,20 +289,13 @@ public class DefaultWidgetServiceImpl implements WidgetService {
 
             Widget result = repository.update(widgetId, delta);
 
-            tx.commit();
             return result;
         }
         catch(ConstraintViolationException e) {
-            if (tx != null) {
-                tx.rollback();
-            }
             throw new RuntimeException(e);
         }
-        catch(Exception e) {
-            if (tx != null) {
-                tx.rollback();
-            }
-            throw e;
+        finally {
+            unlockZ();
         }
 
     }

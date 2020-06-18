@@ -49,7 +49,7 @@ public class WidgetController {
      * @return Collection of widgets
      */
     @GetMapping("/filter")
-    public ResponseEntity<Collection<Widget>> getFilteredByRectangle(@RequestParam int x1,@RequestParam int y1,@RequestParam int x2,@RequestParam int y2) {
+    public ResponseEntity<Collection<Widget>> getFilteredByRectangle(@RequestParam int x1, @RequestParam int y1, @RequestParam int x2, @RequestParam int y2) {
         try {
             return new ResponseEntity<>(service.getFilteredByRectangle(x1, y1, x2, y2), HttpStatus.OK);
         }
